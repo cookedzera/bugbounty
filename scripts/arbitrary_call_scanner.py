@@ -97,6 +97,9 @@ def find_f1(src):
         name, params, mods, _ = m.groups()
         if not re.search(r"\bexternal\b|\bpublic\b", mods):
             continue
+        # skip access-gated functions (by-design admin execute, not an arbitrary-call bug)
+        if re.search(r"only[A-Z]\w*|restricted|requiresAuth|\bauth\b|onlyRole|onlyGov", mods):
+            continue
         # collect param identifiers by type
         addr_params, bytes_params = [], []
         for p in params.split(","):
