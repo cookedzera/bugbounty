@@ -51,3 +51,28 @@ Built reusable scanner: skills/smart_contract_hunting/scripts/arbitrary_call_sca
 Run on Base 300 + ETH 300 = 600 recently-verified contracts. Flags: all FALSE POSITIVES — admin withdrawNative/rescueToken (sweep own balance to hardcoded treasury, owner-gated; NOT approval drains) + one contract literally named "AllInOneExploit" (attacker's own contract).
 LEARNING: recently-verified-contract sampling has ~0 hit rate for live F1 bugs — fresh verifications skew to tokens/proxies/test/scam; real vulnerable routers are OLDER (already audited or already drained). To actually find F1: (a) scan tens of thousands, or (b) SEED with known router/aggregator/zap addresses and diff vs audited equivalents. Random-recent scanning is not the path.
 Blockscout API (keyless): {base}/api/v2/smart-contracts?filter=solidity (paginate next_page_params, newest first); {base}/api/v2/smart-contracts/{addr} -> source_code + additional_sources. Explorers: base=base.blockscout.com, eth=eth.blockscout.com, optimism/arbitrum/gnosis.blockscout.com.
+
+## Multichain scanner run + GitHub push (2026-06-13)
+Pushed full skill (codex, scanner, fingerprints, hunt log, target list, reports) + AGENT_HANDOFF.md to github.com/cookedzera/bugbounty (auth: gh user 'cookedzera', via coworker_git/coworker_github_cli; repo was empty/public). Repo layout: methodology/, scripts/, reports/, AGENT_HANDOFF.md, README.md.
+Scanner run Base300+ETH300+Arbitrum250+Optimism~75 = ~925 contracts. Only flags: owner-gated execute (Abracadabra CauldronOwner.execute is onlyOwner) + admin sweeps = by-design, NOT bugs. Improved scanner: now skips access-gated funcs (onlyX/restricted/requiresAuth) in find_f1 to cut these FPs.
+Blockscout search-by-name (/api/v2/search?q=Router) = noise (returns tokens named 'Router', not router contracts). Not useful for isolating vulnerable-router population.
+CONFIRMED (3rd time): random-recent scanning ~0 hit rate. Next: targeted DEEP HUNT of a small/unaudited Tier-A target (proposed Usual ETH0). Paused for user to pick target.
+Gotcha: don't name throwaway scripts /tmp/inspect.py etc — shadows stdlib `inspect` and breaks pydantic import when running uv python from /tmp.
+
+## Usual ETH0 (Synthetics, Ethereum) — 2026-06-13 — VERDICT: CLEAN core / RESIDUAL oracle
+**Live system (own registry 0xfe35066c…, separate from USD0):**
+- Eth0 token (proxy 0x734eec…, impl Eth0) — mint gated to ETH0_MINT role (DaoCollateral only); per-mint backing check: `totalSupply()+amount ≤ Σ price_i·balanceOf(treasury)/10^dec_i`.
+- DaoCollateral (proxy 0xaad0a8…, impl 0x2927F2…) — swap (deposit collateral→mint ETH0) / redeem (burn ETH0→collateral) / redeemDao / CBR.
+- ClassicalOracle (proxy 0x8a03c5…, impl 0xf26b88…); Treasury 0xc912b5… holds 1949 wstETH (~2411 ETH backing).
+- Collateral set = wstETH ONLY (0x7f39c5…, 18 dec). Feed 0xeb9b65… = `LidoProxyWstETHPriceFeed`.
+
+**Checked CLEAN:**
+- A2 round-trip (swap→redeem): all math Floor-rounded protocol-favorably (Normalize.wadAmountByPrice/wadTokenAmountForPrice + Math.Rounding.Floor). redeemFee further reduces output. No free-mint residual; round-trip R ≤ X.
+- A3 decimals: oracle reads dynamic `decimals()` per feed + `tokenAmountToWad` normalization; collateral decimals read live. No fixed-18 assumption (Vena mistake avoided).
+- Oracle hardening: staleness (timeout+updatedAt), positivity (answer>0), updatedAt>block.timestamp guard, depeg band for stablecoins. Mint/redeem/backing all key off the SAME getPrice → internally consistent (no mint vs redeem price asymmetry).
+- Access: Eth0.mint = ETH0_MINT role only; CBR/fees/pause all role-gated. swap/redeem nonReentrant; collateral = wstETH (no ERC777 callback).
+
+**RESIDUAL (NOT attacker-triggerable, market-dependent — by-design):**
+- Feed `LidoProxyWstETHPriceFeed` returns `answer = IWstETH.stEthPerToken()` (wstETH↔stETH exchange rate, ~1.2369) and sets `updatedAt = block.timestamp` (never stale). Labeled "wstETH / ETH" but **hardcodes stETH:ETH = 1:1**. isStablecoin=false → no depeg band. So a secondary-market stETH/ETH depeg is INVISIBLE: collateral stays overvalued during a depeg → ETH0 effectively undercollateralized. This is a known/accepted Usual design risk, not a deterministic on-chain exploit (you can't move stEthPerToken atomically; redeem returns less collateral at higher price, so mint→dump only profits if ETH0 holds ETH-parity while wstETH is truly worth less — a market/depeg arb, not a contract bug).
+
+**Conclusion:** No fund-critical, attacker-triggerable bug. Well-engineered fork of audited USD0 architecture. Same verdict pattern as Vena/Generic.Money/Royco. Don't re-dive unless Usual adds a NON-wstETH collateral (re-check that token's feed denomination = ETH not USD, and decimals) or makes the oracle manipulable.
